@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import { registerValidation } from "./validation/Auth.js";
 import { validationResult } from "express-validator";
 import UserModel from "./models/User.js";
+import checkAuth from "./utils/checkAuth.js";
 import bcrypt from "bcrypt";
 
 // req - что прислал клиент, res - что буду передавать клиенту
@@ -18,34 +19,115 @@ mongoose
 const app = express();
 // нормальная обработка json, когда отправляем его с клиента в express
 app.use(express.json());
-// Создали registerValidation и если по запросу приходит что есть в нем
-// то тогда выполняй колбэк
-app.post("/auth/register", registerValidation, async (req, res) => {
-  // Валидируем наши ошибки с помощью validationResult
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json(errors.array());
+
+// АВТОРИЗАЦИЯ
+app.post("/auth/login", async (req, res) => {
+  try {
+    // Ищем в базе данных данного пользователя по email
+    const user = await UserModel.findOne({ email: req.body.email });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "Пользователь не найден",
+      });
+    }
+    // Сравниваем пароль который прислал пользователь с паролем из БД
+    const isValidPass = await bcrypt.compare(
+      req.body.password,
+      user.passwordHash
+    );
+
+    if (!isValidPass) {
+      return res.status(404).json({
+        message: "Неверный пароль",
+      });
+    }
+    // Создаем токен с зашифрованным id с базы данных 
+    const token = jwt.sign(
+      {
+        _id: user._id,
+      },
+      "secret123",
+      {
+        expiresIn: "30d",
+      }
+    );
+    // Что бы не передавать клиенту хэш-пароль, с помощью диструктуризации удаляем его
+    const { passwordHash, ...userData } = user._doc;
+    // передаем клиенту данные о созданом пользователи и токен с зашифрованным id
+    res.json({
+      ...userData,
+      token,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Не удалось авторизоваться",
+    });
+    console.log(error);
   }
-
-  // для создания шифра пароля
-  const password = req.body.password;
-  const salt = await bcrypt.genSalt(10);
-  const passwordHash = await bcrypt.hash(password, salt);
-
-  // cоздаем пользователя, передаем туда данные с fronta
-  const doc = new UserModel({
-    email: req.body.email,
-    fullName: req.body.fullName,
-    avatarUrl: req.body.avatarUrl,
-    passwordHash,
-  });
-
-  // Создания пользователя в mongoDB, резултат который передаст mongoDB
-  // приходит в переменную user
-  const user = await doc.save()
-
-  res.json(user);
 });
+
+// РЕГИСТРАЦИЯ
+app.post("/auth/register", registerValidation, async (req, res) => {
+  try {
+    // Валидируем наши ошибки с помощью validationResult
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+      return res.status(400).json(errors.array());
+    }
+
+    // для создания шифра пароля
+    const password = req.body.password; // пароль, который прислал клиент
+    const salt = await bcrypt.genSalt(10); // соль Питерская
+    const hash = await bcrypt.hash(password, salt);
+
+    // cоздаем пользователя, передаем туда данные с fronta
+    const doc = new UserModel({
+      email: req.body.email,
+      fullName: req.body.fullName,
+      avatarUrl: req.body.avatarUrl,
+      passwordHash: hash,
+    });
+    // Создания пользователя в mongoDB, сохраняем в базе данных
+    // В user будет хранится данные о создании пользователя, которые мы передаем
+    // с фронта на бэкенд
+    const user = await doc.save();
+    // // Создаем токен с зашифрованным id с базы данных 
+    const token = jwt.sign(
+      {
+        _id: user._id,
+      },
+      "secret123",
+      {
+        expiresIn: "30d",
+      }
+    );
+    // Что бы не передавать клиенту хэш-пароль, с помощью диструктуризации удаляем его
+    const { passwordHash, ...userData } = user._doc;
+    // передаем клиенту данные о созданом пользователи и токен с id из БД
+    res.json({
+      ...userData,
+      token,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({
+      message: "Не удалось зарегистрироваться",
+    });
+  }
+});
+
+// Получение данных о себе (Проверка токена)
+app.get("/auth/me", checkAuth , async (req, res) => {
+  try {
+    res.json({
+      suc: true
+    })
+  } catch (error) {
+    
+  }
+})
 // запускаем сам сервер
 app.listen(4444, (err) => {
   if (err) {
